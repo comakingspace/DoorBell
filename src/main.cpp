@@ -66,15 +66,23 @@ void setup(){
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   WiFi.setHostname("DoorBell");
-  while (WiFi.waitForConnectResult() != WL_CONNECTED)
+  int count = 0;
+  while (WiFi.waitForConnectResult() != WL_CONNECTED && count <=5 )
   {
-    Serial.println("Connection Failed! Rebooting...");
-    delay(5000);
-    ESP.restart();
+    Serial.println("Connection Failed! Trying again...");
+    delay(2000);
   }
+  if (WiFi.isConnected()){
   Serial.print("Wifi Connected. Ip Adress: ");
   Serial.println(WiFi.localIP());
+  Serial.println("Starting OTA...");
   start_OTA();
+  Serial.println("OTA started. Starting MQTT now...");
+  MQTT_connect();
+  }
+  else{
+    Serial.println("Wifi not connected. We will try it again later.");
+  }
 
   Serial.println("\n\n CoMakingSpace Door Bell");
   while (!Ada_musicPlayer.begin())
@@ -109,7 +117,9 @@ void loop(){
     Serial.println("Ring Ring");
     if (!fallback)
     {
-      Ada_musicPlayer.playFullFile(config.RingSound);
+      //Play the MP3 file. In case this does not work, fall back to just playing a sound.
+      if (!Ada_musicPlayer.playFullFile(config.RingSound));
+        Ada_musicPlayer.sineTest(0x44, 500);
     }
     else
     {
@@ -128,6 +138,9 @@ void loop(){
     Serial.println("Message sent");
   }
   ArduinoOTA.handle();
+  if (!WiFi.isConnected()){
+    WiFi.begin();
+  }
   if (!MQTTclient.isConnected())
     MQTT_connect();
   //Ensure the MQTT Messages get handled properly.
