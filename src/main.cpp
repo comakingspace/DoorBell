@@ -42,7 +42,7 @@ MQTT::Client<IPStack, Countdown, maxMqttSize, 1> MQTTclient = MQTT::Client<IPSta
 #define VS1053_CS 5    // VS1053 chip select pin (output)
 #define VS1053_DCS 16  // VS1053 Data/command select pin (output)
 #define CARDCS 17      // Card chip select pin
-#define VS1053_DREQ 13 // VS1053 Data request, ideally an Interrupt pin
+#define VS1053_DREQ 4 // VS1053 Data request, ideally an Interrupt pin
 #endif
 Adafruit_VS1053_FilePlayer Ada_musicPlayer =
     Adafruit_VS1053_FilePlayer(VS1053_RESET, VS1053_CS, VS1053_DCS, VS1053_DREQ, CARDCS);
@@ -72,6 +72,7 @@ void setup(){
   {
     Serial.println("Connection Failed! Trying again...");
     delay(2000);
+    count++;
   }
   if (WiFi.isConnected()){
   Serial.print("Wifi Connected. Ip Adress: ");
@@ -95,6 +96,7 @@ void setup(){
     Serial.println(F("SD failed, or not present"));
     fallback = true;
   }
+  SD.end();
   loadConfiguration(config_filename, config);
   // Set volume for left, right channels. lower numbers == louder volume!
   Ada_musicPlayer.setVolume(config.Volume, config.Volume);
@@ -115,16 +117,24 @@ void loop(){
   //core functionality is to play music, so let´s do this first!
   if (digitalRead(21) < 1)
   {
+    Ada_musicPlayer.setVolume(config.Volume, config.Volume);
     Serial.println("Ring Ring");
-    if (!fallback)
+    if(SD.begin(CARDCS))
     {
       //Play the MP3 file. In case this does not work, fall back to just playing a sound.
-      if (!Ada_musicPlayer.playFullFile(config.RingSound));
+      bool playSuccessfull = Ada_musicPlayer.playFullFile(config.RingSound); 
+      if (!playSuccessfull)
+      {
+        Serial.println("Playing the file was not successful. Playing a sine tone now.");
         Ada_musicPlayer.sineTest(0x44, 500);
+      }
+      SD.end();
     }
     else
     {
+      Serial.println("No SD Card, playing a sine test sound.");
       Ada_musicPlayer.sineTest(0x44, 500);
+      Ada_musicPlayer.stopPlaying();
       //Ada_musicPlayer.playData(sampleMp3, sizeof(sampleMp3));
     }
     char buf[100];
@@ -328,6 +338,8 @@ void start_OTA(){
 
 void loadConfiguration(const char *filename, Config &config) {
   // Open file for reading
+  if(SD.begin(CARDCS))
+  {
   File file = SD.open(filename);
 
   // Allocate the memory pool on the stack.
@@ -358,10 +370,23 @@ void loadConfiguration(const char *filename, Config &config) {
   // Close the file (File's destructor doesn't close the file)
   file.close();
   Serial.println("Config reading done.");
+  SD.end();
   if (!root.success())
     saveConfiguration(filename, config);
+  }
+  else
+  {
+    Serial.println("SD not present, using default config!");
+    strlcpy(config.RingSound,                   // <- destination
+          "/track001.mp3",  // <- source
+          sizeof(config.RingSound));          // <- destination's capacity
+    config.Volume = 90;
+  }
+
 }
 void saveConfiguration(const char *filename, const Config &config) {
+  if(SD.begin(CARDCS))
+  {
   // Delete existing file, otherwise the configuration is appended to the file
   SD.remove(filename);
 
@@ -390,4 +415,6 @@ void saveConfiguration(const char *filename, const Config &config) {
 
   // Close the file (File's destructor doesn't close the file)
   file.close();
+  SD.end();
+  }
 }
