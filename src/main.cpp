@@ -16,14 +16,13 @@
 #include <Countdown.h>
 #include <MQTTClient.h>
 #include <ArduinoJson.h>
+#include <TaskScheduler.h>
 
 
 struct Config{
   char RingSound[30];
   int Volume;
 };
-
-
 
 const char* config_filename = "/config.txt";
 Config config; // <- global configuration object
@@ -32,6 +31,7 @@ WiFiClient client;
 IPStack ipstack(client);
 #define maxMqttSize 5000
 MQTT::Client<IPStack, Countdown, maxMqttSize, 1> MQTTclient = MQTT::Client<IPStack, Countdown, maxMqttSize, 1>(ipstack);
+char* answerTopic = "/DoorBell/Answers";
 //Stuff for the VS1053 board
 // These are the pins used
 #define VS1053_RESET 32 // VS1053 reset pin (not used!)
@@ -57,106 +57,95 @@ void start_OTA();
 void saveConfiguration(const char *filename, const Config &config);
 void loadConfiguration(const char *filename, Config &config);
 
+//void checkMQTT(void * pvParameters);
+void checkBell();
+void checkMQTT();
+void checkBell_Task(void * pvParameters);
+void checkMQTT_Task(void * pvParameters);
+void MQTTSend(String msg, char* topic);
+
+//Define Tasks
+//Task bellTask(200, TASK_FOREVER, &checkBell);
+Task MQTTTask(2000, TASK_FOREVER, &checkMQTT);
+Scheduler runner;
 
 void setup(){
-  Serial.begin(9600);
-  Serial.println("Connecting to WiFi...");
-  pinMode(Ring_Pin, INPUT_PULLUP);
-  // ### WiFi Setup ####
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  WiFi.setHostname("DoorBell");
-  int count = 0;
-  while (WiFi.waitForConnectResult() != WL_CONNECTED && count <=5 )
-  {
-    Serial.println("Connection Failed! Trying again...");
-    delay(2000);
-    count++;
-  }
-  if (WiFi.isConnected()){
-  Serial.print("Wifi Connected. Ip Adress: ");
-  Serial.println(WiFi.localIP());
-  Serial.println("Starting OTA...");
-  start_OTA();
-  Serial.println("OTA started. Starting MQTT now...");
-  MQTT_connect();
-  }
-  else{
-    Serial.println("Wifi not connected. We will try it again later.");
-  }
-
-  Serial.println("\n\n CoMakingSpace Door Bell");
-  while (!Ada_musicPlayer.begin())
-  { // initialise the music player
-    Serial.println(F("Couldn't find VS1053, do you have the right pins defined? We will keep trying."));
-  }
-  if (!SD.begin(CARDCS))
-  { //Check the SD Card to be present. If not, we need to play a hardcoded file.
-    Serial.println(F("SD failed, or not present"));
-    fallback = true;
-  }
-  SD.end();
-  loadConfiguration(config_filename, config);
-  // Set volume for left, right channels. lower numbers == louder volume!
-  Ada_musicPlayer.setVolume(config.Volume, config.Volume);
-  //I do not think we will need the following line with the new library, but we need to test that, so I leave it in for now
-  Ada_musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT); // DREQ int
-  //Just a couple of reference lines.
-  //printDirectory(SD.open("/"), 0);
-  // Play a file in the background, REQUIRES interrupts!
-  //Serial.println(F("Playing full track 001"));
-  //Ada_musicPlayer.playFullFile("/track001.mp3");
-
-  //Serial.println(F("Playing track 002"));
-  //Ada_musicPlayer.startPlayingFile("/track002.mp3");
+  // General DoorBell setup: Input Pin and VS1053
+    Serial.println("\n\n CoMakingSpace Door Bell");
+    while (!Ada_musicPlayer.begin()){ 
+      // initialise the music player
+      Serial.println(F("Couldn't find VS1053, do you have the right pins defined? We will keep trying."));
+    }
+    if (!SD.begin(CARDCS)){ 
+      //Check the SD Card to be present. If not, we need to play a hardcoded file.
+      Serial.println(F("SD failed, or not present"));
+      fallback = true;
+    }
+    SD.end();
+    loadConfiguration(config_filename, config);
+    // Set volume for left, right channels. lower numbers == louder volume!
+    Ada_musicPlayer.setVolume(config.Volume, config.Volume);
+    //I do not think we will need the following line with the new library, but we need to test that, so I leave it in for now
+    Ada_musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT); // DREQ int
+    pinMode(Ring_Pin, INPUT_PULLUP);
+    //attachInterrupt(Ring_Pin,checkBell,FALLING);
+  // WiFi Setup
+    Serial.begin(9600);
+    Serial.println("Connecting to WiFi...");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    WiFi.setHostname("DoorBell");
+    int count = 0;
+    while (WiFi.waitForConnectResult() != WL_CONNECTED && count <=3 )
+    {
+      Serial.println("Connection Failed! Trying again...");
+      delay(1000);
+      count++;
+    }
+    if (WiFi.isConnected()){
+    Serial.print("Wifi Connected. Ip Adress: ");
+    Serial.println(WiFi.localIP());
+  // OTA Setup
+    Serial.println("Starting OTA...");
+    start_OTA();
+  // MQTT Setup
+    Serial.println("OTA started. Starting MQTT now...");
+    MQTT_connect();
+    }
+    else{
+      Serial.println("Wifi not connected. We will try it again later.");
+    }
+  // Initialize Tasks
+  //runner.init();
+  //runner.addTask(bellTask);
+  //runner.addTask(MQTTTask);
+  //bellTask.enable();
+  //MQTTTask.enable();
+  
+  xTaskCreatePinnedToCore(checkBell_Task, "checkBell", 10000, NULL, 0, NULL,0);
+  //xTaskCreatePinnedToCore(checkMQTT_Task, "checkMQTT", 10000, NULL, 0, NULL, 1);
 }
 
 void loop(){
-  
-  //core functionality is to play music, so let´s do this first!
-  if (digitalRead(21) < 1)
-  {
-    Ada_musicPlayer.setVolume(config.Volume, config.Volume);
-    Serial.println("Ring Ring");
-    if(SD.begin(CARDCS))
-    {
-      //Play the MP3 file. In case this does not work, fall back to just playing a sound.
-      bool playSuccessfull = Ada_musicPlayer.playFullFile(config.RingSound); 
-      if (!playSuccessfull)
-      {
-        Serial.println("Playing the file was not successful. Playing a sine tone now.");
-        Ada_musicPlayer.sineTest(0x44, 500);
-      }
-      SD.end();
-    }
-    else
-    {
-      Serial.println("No SD Card, playing a sine test sound.");
-      Ada_musicPlayer.sineTest(0x44, 500);
-      Ada_musicPlayer.stopPlaying();
-      //Ada_musicPlayer.playData(sampleMp3, sizeof(sampleMp3));
-    }
-    char buf[100];
-    strcpy(buf, "Ring Ring");
-    /*MQTT::Message message;
-    message.qos = MQTT::QOS0;
-    message.retained = false;
-    message.dup = false;
-    message.payload = (void *)buf;
-    message.payloadlen = strlen(buf) + 1;*/
-    int rc = MQTTclient.publish("/DoorBell/Ring", (void *)buf, strlen(buf) + 1);
-    Serial.println("Message sent");
-  }
+  //vTaskDelay(10);
   ArduinoOTA.handle();
   if (!WiFi.isConnected()){
     WiFi.begin();
+  
   }
+
+  checkMQTT();
+  //runner.execute();
+}
+
+void checkMQTT(){
+  //Serial.println("Checking MQTT");
   if (!MQTTclient.isConnected())
     MQTT_connect();
   //Ensure the MQTT Messages get handled properly.
-  MQTTclient.yield(1000);
+  MQTTclient.yield(500);
 }
+
 /// File listing helper
 String printDirectory(File dir, int numTabs){
   String result = "";
@@ -192,6 +181,7 @@ String printDirectory(File dir, int numTabs){
   }
   return result;
 }
+
 //handling arriving mqtt messages
 void MQTT_message_control(MQTT::MessageData &md){
   MQTT::Message &message = md.message;
@@ -204,15 +194,24 @@ void MQTT_message_control(MQTT::MessageData &md){
   Serial.print("Got the following payload: ");
   Serial.println(control_message["payload"].asString());
   if (control_message["command"].as<String>().equalsIgnoreCase("play")){
-    Serial.println("playing a file");
-    Ada_musicPlayer.playFullFile((const char*)control_message["payload"]);
+    Serial.print("Playing: ");
+    Serial.println((const char*)control_message["payload"]);
+    String answer = "Playing the file: ";
+    answer.concat((const char*)control_message["payload"]);
+    MQTTSend(answer,answerTopic);
+    if(SD.begin(CARDCS)){
+      Ada_musicPlayer.playFullFile((const char*)control_message["payload"]);
+      SD.end();
+    }
   }
   else if (control_message["command"].as<String>().equalsIgnoreCase("selectRingFile")){
-    //config.RingSound = (char*)control_message["payload"].as<char*>();
-      strlcpy(config.RingSound,                   // <- destination
-          control_message["payload"],  // <- source
-          strlen(control_message["payload"])); 
+    strlcpy(config.RingSound,                   // <- destination
+        control_message["payload"],  // <- source
+        strlen(control_message["payload"]) + 1); 
     saveConfiguration(config_filename,config);
+    String answer = "The ringtone got changes to: ";
+    answer.concat((const char*)control_message["payload"]);
+    MQTTSend(answer,answerTopic);
   }
   else if (control_message["command"].as<String>().equalsIgnoreCase("setVolume")){
     //config.RingSound = (char*)control_message["payload"].as<char*>();
@@ -224,13 +223,21 @@ void MQTT_message_control(MQTT::MessageData &md){
   }
   else if (control_message["command"].as<String>().equalsIgnoreCase("listSD")){
     Serial.println("Listing SD...");
-    String directoryList = printDirectory(SD.open("/"),0);
-    Serial.print("Length of directory list: ");
-    Serial.println(directoryList.length());
-    char buf[directoryList.length() +1];
-    directoryList.toCharArray(buf, directoryList.length() +1);
-    int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
-    Serial.println(directoryList);
+    String directoryList = "SD Content:\n";
+    if (SD.begin(CARDCS)){
+      directoryList.concat(printDirectory(SD.open("/"),0));
+      Serial.print("Length of directory list: ");
+      Serial.println(directoryList.length());
+      //char buf[directoryList.length() +1];
+      //directoryList.toCharArray(buf, directoryList.length() +1);
+      //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
+      MQTTSend(directoryList,answerTopic);
+      Serial.println(directoryList);
+      SD.end();
+    }
+    else{
+      MQTTSend("SD Card could not be opened",answerTopic);
+    }
   }
   else if (control_message["command"].as<String>().equalsIgnoreCase("listConfig")){
     Serial.println("listing config");
@@ -241,9 +248,10 @@ void MQTT_message_control(MQTT::MessageData &md){
     configuration.concat("Volume: ");
     configuration.concat(config.Volume);
     configuration.concat("\n");
-    char buf[configuration.length() +1];
-    configuration.toCharArray(buf, configuration.length()+1);
-    int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
+    //char buf[configuration.length() +1];
+    //configuration.toCharArray(buf, configuration.length()+1);
+    //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
+    MQTTSend(configuration,answerTopic);
     Serial.println(configuration);
   }
   else{
@@ -356,8 +364,7 @@ void loadConfiguration(const char *filename, Config &config) {
       strlcpy(config.RingSound,                   // <- destination
           "/track001.mp3",  // <- source
           sizeof(config.RingSound));          // <- destination's capacity
-  config.Volume = 90;
-
+  config.Volume = 1;
   }
   else
   {
@@ -417,4 +424,55 @@ void saveConfiguration(const char *filename, const Config &config) {
   file.close();
   SD.end();
   }
+}
+
+void checkBell(){
+  //core functionality is to play music, so let´s do this first!
+    if (digitalRead(21) < 1)
+    {
+      Ada_musicPlayer.setVolume(config.Volume, config.Volume);
+      Serial.println("Ring Ring");
+      if(SD.begin(CARDCS))
+      {
+        //Play the MP3 file. In case this does not work, fall back to just playing a sound.
+        bool playSuccessfull = Ada_musicPlayer.playFullFile(config.RingSound); 
+        if (!playSuccessfull)
+        {
+          Serial.println("Playing the file was not successful. Playing a sine tone now.");
+          Ada_musicPlayer.sineTest(0x44, 500);
+        }
+        SD.end();
+      }
+      else
+      {
+        Serial.println("No SD Card, playing a sine test sound.");
+        Ada_musicPlayer.sineTest(0x44, 500);
+        Ada_musicPlayer.stopPlaying();
+        //Ada_musicPlayer.playData(sampleMp3, sizeof(sampleMp3));
+      }
+      MQTTSend("Ring Ring","/DoorBell/Ring");
+      Serial.println("Message sent");
+    }
+}
+
+void checkBell_Task(void * pvParameters){
+  Serial.println("Starting Check Bell Task");
+  while(true){
+    checkBell();
+    delay(50);
+  }
+}
+
+void checkMQTT_Task(void * pvParameters){
+  Serial.println("Starting MQTT Task");
+  while(true){
+  checkMQTT();
+  }
+}
+
+void MQTTSend(String msg, char* topic)
+{
+    char buf[msg.length() +1];
+    msg.toCharArray(buf, msg.length() +1);
+    int rc = MQTTclient.publish(topic, (void *)buf, strlen(buf) + 1);
 }
