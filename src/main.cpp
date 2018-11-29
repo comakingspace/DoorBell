@@ -200,6 +200,7 @@ void MQTT_message_control(MQTT::MessageData &md){
     answer.concat((const char*)control_message["payload"]);
     MQTTSend(answer,answerTopic);
     if(SD.begin(CARDCS)){
+      Ada_musicPlayer.setVolume(config.Volume,config.Volume);
       Ada_musicPlayer.playFullFile((const char*)control_message["payload"]);
       SD.end();
     }
@@ -439,14 +440,15 @@ void checkBell(){
         if (!playSuccessfull)
         {
           Serial.println("Playing the file was not successful. Playing a sine tone now.");
-          Ada_musicPlayer.sineTest(0x44, 500);
+          Ada_musicPlayer.sineTest(0x44, 2000);
+          Ada_musicPlayer.stopPlaying();
         }
         SD.end();
       }
       else
       {
         Serial.println("No SD Card, playing a sine test sound.");
-        Ada_musicPlayer.sineTest(0x44, 500);
+        Ada_musicPlayer.sineTest(0x44, 2000);
         Ada_musicPlayer.stopPlaying();
         //Ada_musicPlayer.playData(sampleMp3, sizeof(sampleMp3));
       }
