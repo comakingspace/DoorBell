@@ -20,7 +20,7 @@
 
 
 struct Config{
-  char RingSound[30];
+  char RingSound[100];
   int Volume;
 };
 
