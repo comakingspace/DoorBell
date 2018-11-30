@@ -88,6 +88,7 @@ void setup(){
     //I do not think we will need the following line with the new library, but we need to test that, so I leave it in for now
     Ada_musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT); // DREQ int
     pinMode(Ring_Pin, INPUT_PULLUP);
+    xTaskCreatePinnedToCore(checkBell_Task, "checkBell", 10000, NULL, 0, NULL,0);
     //attachInterrupt(Ring_Pin,checkBell,FALLING);
   // WiFi Setup
     Serial.begin(9600);
@@ -122,7 +123,7 @@ void setup(){
   //bellTask.enable();
   //MQTTTask.enable();
   
-  xTaskCreatePinnedToCore(checkBell_Task, "checkBell", 10000, NULL, 0, NULL,0);
+  
   //xTaskCreatePinnedToCore(checkMQTT_Task, "checkMQTT", 10000, NULL, 0, NULL, 1);
 }
 
@@ -226,7 +227,7 @@ void MQTT_message_control(MQTT::MessageData &md){
     Serial.println("Listing SD...");
     String directoryList = "SD Content:\n";
     if (SD.begin(CARDCS)){
-      directoryList.concat(printDirectory(SD.open("/"),0));
+      directoryList.concat(printDirectory(SD.open((const char*)control_message["payload"]),0));
       Serial.print("Length of directory list: ");
       Serial.println(directoryList.length());
       //char buf[directoryList.length() +1];
@@ -363,7 +364,7 @@ void loadConfiguration(const char *filename, Config &config) {
   {
     Serial.println(F("Failed to read file, using default configuration"));
       strlcpy(config.RingSound,                   // <- destination
-          "/track001.mp3",  // <- source
+          "/Ringtones/track001.mp3",  // <- source
           sizeof(config.RingSound));          // <- destination's capacity
   config.Volume = 1;
   }
@@ -371,7 +372,7 @@ void loadConfiguration(const char *filename, Config &config) {
   {
   // Copy values from the JsonObject to the Config
   strlcpy(config.RingSound,                   // <- destination
-          root["RingSound"] | "/track001.mp3",  // <- source
+          root["RingSound"] | "/Ringtones/track001.mp3",  // <- source
           sizeof(config.RingSound));          // <- destination's capacity
   config.Volume = root["Volume"];
   }
