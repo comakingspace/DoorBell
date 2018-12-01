@@ -16,7 +16,6 @@
 #include <Countdown.h>
 #include <MQTTClient.h>
 #include <ArduinoJson.h>
-#include <TaskScheduler.h>
 
 
 struct Config{
@@ -64,10 +63,7 @@ void checkBell_Task(void * pvParameters);
 void checkMQTT_Task(void * pvParameters);
 void MQTTSend(String msg, char* topic);
 
-//Define Tasks
-//Task bellTask(200, TASK_FOREVER, &checkBell);
-Task MQTTTask(2000, TASK_FOREVER, &checkMQTT);
-Scheduler runner;
+
 
 void setup(){
   // General DoorBell setup: Input Pin and VS1053
@@ -111,6 +107,7 @@ void setup(){
     start_OTA();
   // MQTT Setup
     Serial.println("OTA started. Starting MQTT now...");
+    
     MQTT_connect();
     }
     else{
@@ -136,6 +133,7 @@ void loop(){
   }
 
   checkMQTT();
+
   //runner.execute();
 }
 
@@ -144,6 +142,10 @@ void checkMQTT(){
   if (!MQTTclient.isConnected())
     MQTT_connect();
   //Ensure the MQTT Messages get handled properly.
+  /*if (MQTTclient.yield(500) != 0)
+  {
+    MQTT_connect();
+  }*/
   MQTTclient.yield(500);
 }
 
@@ -285,6 +287,7 @@ void MQTT_connect(){
     MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
     data.MQTTVersion = 3.1;
     data.clientID.cstring = (char *)"DoorBellMQTTClient";
+    data.keepAliveInterval = 1000;
     rc = MQTTclient.connect(data);
     if (rc != 0)
     {
