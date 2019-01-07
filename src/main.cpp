@@ -17,6 +17,9 @@
 #include <MQTTClient.h>
 #include <ArduinoJson.h>
 
+//#define MQTT_PAHO 1
+#define MQTT_PUBSUB 1
+
 
 struct Config{
   char RingSound[100];
@@ -27,10 +30,19 @@ const char* config_filename = "/config.txt";
 Config config; // <- global configuration object
 
 WiFiClient client;
-IPStack ipstack(client);
-#define maxMqttSize 5000
-MQTT::Client<IPStack, Countdown, maxMqttSize, 1> MQTTclient = MQTT::Client<IPStack, Countdown, maxMqttSize, 1>(ipstack);
+
+#ifdef MQTT_PAHO
+  IPStack ipstack(client);
+  #define MQTT_MAX_PACKET_SIZE 5000
+  MQTT::Client<IPStack, Countdown, MQTT_MAX_PACKET_SIZE, 1> MQTTclient = MQTT::Client<IPStack, Countdown, maxMqttSize, 1>(ipstack);
+#endif
+#ifdef MQTT_PUBSUB
+  #include <PubSubClient.h>
+  PubSubClient pubsub_client(client);
+#endif
+
 char* answerTopic = "/DoorBell/Answers";
+
 //Stuff for the VS1053 board
 // These are the pins used
 #define VS1053_RESET 32 // VS1053 reset pin (not used!)
@@ -38,10 +50,10 @@ char* answerTopic = "/DoorBell/Answers";
 
 // Feather ESP32
 #if defined(ESP32)
-#define VS1053_CS 5    // VS1053 chip select pin (output)
-#define VS1053_DCS 16  // VS1053 Data/command select pin (output)
-#define CARDCS 17      // Card chip select pin
-#define VS1053_DREQ 4 // VS1053 Data request, ideally an Interrupt pin
+  #define VS1053_CS 5    // VS1053 chip select pin (output)
+  #define VS1053_DCS 16  // VS1053 Data/command select pin (output)
+  #define CARDCS 17      // Card chip select pin
+  #define VS1053_DREQ 4 // VS1053 Data request, ideally an Interrupt pin
 #endif
 Adafruit_VS1053_FilePlayer Ada_musicPlayer =
     Adafruit_VS1053_FilePlayer(VS1053_RESET, VS1053_CS, VS1053_DCS, VS1053_DREQ, CARDCS);
@@ -51,24 +63,35 @@ boolean fallback = false;
 //Defining method headers.
 String printDirectory(File dir, int numTabs);
 void message_play(MQTT::MessageData &md);
-void MQTT_connect();
 void start_OTA();
 void saveConfiguration(const char *filename, const Config &config);
 void loadConfiguration(const char *filename, Config &config);
 
-//void checkMQTT(void * pvParameters);
+//void paho_checkMQTT(void * pvParameters);
 void checkBell();
-void checkMQTT();
 void checkBell_Task(void * pvParameters);
-void checkMQTT_Task(void * pvParameters);
-void MQTTSend(String msg, char* topic);
 
-
+void generic_MQTT_message_control(char* payload);
+void generic_MQTTSend(String msg, char* topic);
+#ifdef MQTT_PAHO
+  void paho_MQTT_message_control(MQTT::MessageData &md);
+  void paho_MQTT_connect();
+  void paho_checkMQTT();
+  void paho_checkMQTT_Task(void * pvParameters);
+  void paho_MQTTSend(String msg, char* topic);
+#endif
+#ifdef MQTT_PUBSUB
+  void pubsub_callback(char* topic, byte* payload, unsigned int length);
+  void pubsub_connect();
+  void pubsub_MQTT_update();
+  void pubsub_MQTTSend(String msg, char* topic);
+#endif
 
 void setup(){
   // General DoorBell setup: Input Pin and VS1053
+    Serial.begin(9600);
     Serial.println("\n\n CoMakingSpace Door Bell");
-    while (!Ada_musicPlayer.begin()){ 
+    while (!Ada_musicPlayer.begin() && !Serial.available()){ 
       // initialise the music player
       Serial.println(F("Couldn't find VS1053, do you have the right pins defined? We will keep trying."));
     }
@@ -108,7 +131,13 @@ void setup(){
   // MQTT Setup
     Serial.println("OTA started. Starting MQTT now...");
     
-    MQTT_connect();
+    #ifdef MQTT_PAHO
+      paho_MQTT_connect();
+    #endif
+    #ifdef MQTT_PUBSUB
+      pubsub_client.setServer(hostname, port);
+      pubsub_client.setCallback(pubsub_callback);
+    #endif
     }
     else{
       Serial.println("Wifi not connected. We will try it again later.");
@@ -121,7 +150,7 @@ void setup(){
   //MQTTTask.enable();
   
   
-  //xTaskCreatePinnedToCore(checkMQTT_Task, "checkMQTT", 10000, NULL, 0, NULL, 1);
+  //xTaskCreatePinnedToCore(paho_checkMQTT_Task, "paho_checkMQTT", 10000, NULL, 0, NULL, 1);
 }
 
 void loop(){
@@ -131,22 +160,14 @@ void loop(){
     WiFi.begin();
   
   }
-
-  checkMQTT();
-
+  #ifdef MQTT_PAHO
+    paho_checkMQTT();
+  #endif
+  #ifdef MQTT_PUBSUB
+    pubsub_MQTT_update();
+  #endif
+  delay(100);
   //runner.execute();
-}
-
-void checkMQTT(){
-  //Serial.println("Checking MQTT");
-  if (!MQTTclient.isConnected())
-    MQTT_connect();
-  //Ensure the MQTT Messages get handled properly.
-  /*if (MQTTclient.yield(500) != 0)
-  {
-    MQTT_connect();
-  }*/
-  MQTTclient.yield(500);
 }
 
 /// File listing helper
@@ -186,125 +207,7 @@ String printDirectory(File dir, int numTabs){
 }
 
 //handling arriving mqtt messages
-void MQTT_message_control(MQTT::MessageData &md){
-  MQTT::Message &message = md.message;
-  Serial.print("Got the Message:");
-  Serial.println((char *)message.payload);
-  StaticJsonBuffer<maxMqttSize> jsonBuffer;
-  JsonObject &control_message = jsonBuffer.parseObject((char *)message.payload);
-  Serial.print("Got the following command: ");
-  Serial.println(control_message["command"].asString());
-  Serial.print("Got the following payload: ");
-  Serial.println(control_message["payload"].asString());
-  if (control_message["command"].as<String>().equalsIgnoreCase("play")){
-    Serial.print("Playing: ");
-    Serial.println((const char*)control_message["payload"]);
-    String answer = "Playing the file: ";
-    answer.concat((const char*)control_message["payload"]);
-    MQTTSend(answer,answerTopic);
-    if(SD.begin(CARDCS)){
-      Ada_musicPlayer.setVolume(config.Volume,config.Volume);
-      Ada_musicPlayer.playFullFile((const char*)control_message["payload"]);
-      SD.end();
-    }
-  }
-  else if (control_message["command"].as<String>().equalsIgnoreCase("selectRingFile")){
-    strlcpy(config.RingSound,                   // <- destination
-        control_message["payload"],  // <- source
-        strlen(control_message["payload"]) + 1); 
-    saveConfiguration(config_filename,config);
-    String answer = "The ringtone got changes to: ";
-    answer.concat((const char*)control_message["payload"]);
-    MQTTSend(answer,answerTopic);
-  }
-  else if (control_message["command"].as<String>().equalsIgnoreCase("setVolume")){
-    //config.RingSound = (char*)control_message["payload"].as<char*>();
-    Serial.print("Setting Volume to: ");
-    Serial.println((int)control_message["payload"]);
-    config.Volume = (int)control_message["payload"];
-    Ada_musicPlayer.setVolume(config.Volume, config.Volume);
-    saveConfiguration(config_filename,config);
-  }
-  else if (control_message["command"].as<String>().equalsIgnoreCase("listSD")){
-    Serial.println("Listing SD...");
-    String directoryList = "SD Content:\n";
-    if (SD.begin(CARDCS)){
-      directoryList.concat(printDirectory(SD.open((const char*)control_message["payload"]),0));
-      Serial.print("Length of directory list: ");
-      Serial.println(directoryList.length());
-      //char buf[directoryList.length() +1];
-      //directoryList.toCharArray(buf, directoryList.length() +1);
-      //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
-      MQTTSend(directoryList,answerTopic);
-      Serial.println(directoryList);
-      SD.end();
-    }
-    else{
-      MQTTSend("SD Card could not be opened",answerTopic);
-    }
-  }
-  else if (control_message["command"].as<String>().equalsIgnoreCase("listConfig")){
-    Serial.println("listing config");
-    String configuration = "";
-    configuration.concat("Ringtone: ");
-    configuration.concat(config.RingSound);
-    configuration.concat("\n");
-    configuration.concat("Volume: ");
-    configuration.concat(config.Volume);
-    configuration.concat("\n");
-    //char buf[configuration.length() +1];
-    //configuration.toCharArray(buf, configuration.length()+1);
-    //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
-    MQTTSend(configuration,answerTopic);
-    Serial.println(configuration);
-  }
-  else{
-    Serial.print("Got some other command:");
-    Serial.println(control_message["command"].as<String>());
-  }
 
-
-
-}
-void MQTT_connect(){
-
-  Serial.print("MQTT Connecting to ");
-  Serial.print(hostname);
-  Serial.print(":");
-  Serial.println(port);
-
-  int rc = ipstack.connect(hostname, port);
-  if (rc != 1)
-  {
-    Serial.print("rc from TCP connect is ");
-    Serial.println(rc);
-    Serial.println("TCP connection not established. Not trying to connect using MQTT.");
-  }
-  else
-  {
-    //Only continue with MQTT Connection if the TCP connection was successful!
-    Serial.println("MQTT connecting");
-    MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
-    data.MQTTVersion = 3.1;
-    data.clientID.cstring = (char *)"DoorBellMQTTClient";
-    data.keepAliveInterval = 20;
-    rc = MQTTclient.connect(data);
-    if (rc != 0)
-    {
-      Serial.print("rc from MQTT connect is ");
-      Serial.println(rc);
-    }
-    Serial.println("MQTT connected");
-
-    rc = MQTTclient.subscribe((const char *)"/DoorBell/Control", MQTT::QOS0, MQTT_message_control);
-    if (rc != 0)
-    {
-      Serial.print("rc from MQTT subscribe is ");
-      Serial.println(rc);
-    }
-    Serial.println("MQTT subscribed");
-  }
-}
 void start_OTA(){
   ArduinoOTA.setHostname("DoorBell");
 
@@ -456,7 +359,8 @@ void checkBell(){
         Ada_musicPlayer.stopPlaying();
         //Ada_musicPlayer.playData(sampleMp3, sizeof(sampleMp3));
       }
-      MQTTSend("Ring Ring","/DoorBell/Ring");
+      generic_MQTTSend("Ring Ring","/DoorBell/Ring");
+      
       Serial.println("Message sent");
     }
 }
@@ -465,20 +369,281 @@ void checkBell_Task(void * pvParameters){
   Serial.println("Starting Check Bell Task");
   while(true){
     checkBell();
-    delay(50);
+    delay(100);
   }
 }
 
-void checkMQTT_Task(void * pvParameters){
-  Serial.println("Starting MQTT Task");
-  while(true){
-  checkMQTT();
+void generic_MQTT_message_control(char* payload){
+    Serial.print("Got the Message:");
+    Serial.println(payload);
+    StaticJsonBuffer<MQTT_MAX_PACKET_SIZE> jsonBuffer;
+    JsonObject &control_message = jsonBuffer.parseObject(payload);
+    Serial.print("Got the following command: ");
+    Serial.println(control_message["command"].asString());
+    Serial.print("Got the following payload: ");
+    Serial.println(control_message["payload"].asString());
+    if (control_message["command"].as<String>().equalsIgnoreCase("play")){
+      Serial.print("Playing: ");
+      Serial.println((const char*)control_message["payload"]);
+      String answer = "Playing the file: ";
+      answer.concat((const char*)control_message["payload"]);
+      generic_MQTTSend(answer,answerTopic);
+      if(SD.begin(CARDCS)){
+        Ada_musicPlayer.setVolume(config.Volume,config.Volume);
+        Ada_musicPlayer.playFullFile((const char*)control_message["payload"]);
+        SD.end();
+      }
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("selectRingFile")){
+      strlcpy(config.RingSound,                   // <- destination
+          control_message["payload"],  // <- source
+          strlen(control_message["payload"]) + 1); 
+      saveConfiguration(config_filename,config);
+      String answer = "The ringtone got changes to: ";
+      answer.concat((const char*)control_message["payload"]);
+      generic_MQTTSend(answer,answerTopic);
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("setVolume")){
+      //config.RingSound = (char*)control_message["payload"].as<char*>();
+      Serial.print("Setting Volume to: ");
+      Serial.println((int)control_message["payload"]);
+      config.Volume = (int)control_message["payload"];
+      Ada_musicPlayer.setVolume(config.Volume, config.Volume);
+      saveConfiguration(config_filename,config);
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("listSD")){
+      Serial.println("Listing SD...");
+      String directoryList = "SD Content:\n";
+      if (SD.begin(CARDCS)){
+        directoryList.concat(printDirectory(SD.open((const char*)control_message["payload"]),0));
+        Serial.print("Length of directory list: ");
+        Serial.println(directoryList.length());
+        //char buf[directoryList.length() +1];
+        //directoryList.toCharArray(buf, directoryList.length() +1);
+        //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
+        generic_MQTTSend(directoryList,answerTopic);
+        Serial.println(directoryList);
+        SD.end();
+      }
+      else{
+        generic_MQTTSend("SD Card could not be opened",answerTopic);
+      }
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("listConfig")){
+      Serial.println("listing config");
+      String configuration = "";
+      configuration.concat("Ringtone: ");
+      configuration.concat(config.RingSound);
+      configuration.concat("\n");
+      configuration.concat("Volume: ");
+      configuration.concat(config.Volume);
+      configuration.concat("\n");
+      //char buf[configuration.length() +1];
+      //configuration.toCharArray(buf, configuration.length()+1);
+      //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
+      generic_MQTTSend(configuration,answerTopic);
+      Serial.println(configuration);
+    }
+    else{
+      Serial.print("Got some other command:");
+      Serial.println(control_message["command"].as<String>());
+    }
   }
-}
 
-void MQTTSend(String msg, char* topic)
-{
-    char buf[msg.length() +1];
-    msg.toCharArray(buf, msg.length() +1);
-    int rc = MQTTclient.publish(topic, (void *)buf, strlen(buf) + 1);
-}
+void generic_MQTTSend(String msg, char* topic){
+      #ifdef MQTT_PAHO
+        paho_MQTTSend(msg, topic);
+      #endif
+      #ifdef MQTT_PUBSUB
+        pubsub_MQTTSend(msg, topic);
+      #endif
+  }
+
+#ifdef MQTT_PUBSUB
+  void pubsub_callback(char* topic, byte* payload, unsigned int length){
+    char p[length + 1];
+    for(int i = 0; i < length; i++){
+      p[i] = (char)payload[i];
+    }
+    p[length] = '\0'; 
+    generic_MQTT_message_control(p);
+  }
+
+  void pubsub_connect(){
+    // Loop until we're reconnected
+    while (!pubsub_client.connected()) {
+      Serial.print("Attempting MQTT connection...");
+      // Create a random client ID
+      String clientId = "DoorBellMQTTClient";
+      // Attempt to connect
+      if (pubsub_client.connect(clientId.c_str())) {
+        Serial.println("connected");
+        // Once connected, subscribe
+        pubsub_client.subscribe("/DoorBell/Control");
+      } else {
+        Serial.print("failed, rc=");
+        Serial.print(pubsub_client.state());
+        Serial.println(" try again in 5 seconds");
+        // Wait 5 seconds before retrying
+        delay(5000);
+      }
+    } 
+  }
+
+  void pubsub_MQTT_update(){
+    if (!pubsub_client.connected()) {
+      pubsub_connect();
+    }
+    pubsub_client.loop();
+  }
+
+  void pubsub_MQTTSend(String msg, char* topic){
+    pubsub_client.publish(topic, msg.c_str());
+  }
+#endif
+
+#ifdef MQTT_PAHO
+  void paho_checkMQTT(){
+    //Serial.println("Checking MQTT");
+    if (!MQTTclient.isConnected())
+    {//ipstack.disconnect();
+      Serial.println("MQTT disconnected");
+      paho_MQTT_connect();
+    }
+    //Ensure the MQTT Messages get handled properly.
+    /*if (MQTTclient.yield(500) != 0)
+    {
+      paho_MQTT_connect();
+    }*/
+    MQTTclient.yield(500);
+  }
+
+  void paho_checkMQTT_Task(void * pvParameters){
+    Serial.println("Starting MQTT Task");
+    while(true){
+    paho_checkMQTT();
+    }
+  }
+
+  void paho_MQTT_message_control(MQTT::MessageData &md){
+    MQTT::Message &message = md.message;
+    Serial.print("Got the Message:");
+    Serial.println((char *)message.payload);
+    StaticJsonBuffer<maxMqttSize> jsonBuffer;
+    JsonObject &control_message = jsonBuffer.parseObject((char *)message.payload);
+    Serial.print("Got the following command: ");
+    Serial.println(control_message["command"].asString());
+    Serial.print("Got the following payload: ");
+    Serial.println(control_message["payload"].asString());
+    if (control_message["command"].as<String>().equalsIgnoreCase("play")){
+      Serial.print("Playing: ");
+      Serial.println((const char*)control_message["payload"]);
+      String answer = "Playing the file: ";
+      answer.concat((const char*)control_message["payload"]);
+      paho_MQTTSend(answer,answerTopic);
+      if(SD.begin(CARDCS)){
+        Ada_musicPlayer.setVolume(config.Volume,config.Volume);
+        Ada_musicPlayer.playFullFile((const char*)control_message["payload"]);
+        SD.end();
+      }
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("selectRingFile")){
+      strlcpy(config.RingSound,                   // <- destination
+          control_message["payload"],  // <- source
+          strlen(control_message["payload"]) + 1); 
+      saveConfiguration(config_filename,config);
+      String answer = "The ringtone got changes to: ";
+      answer.concat((const char*)control_message["payload"]);
+      paho_MQTTSend(answer,answerTopic);
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("setVolume")){
+      //config.RingSound = (char*)control_message["payload"].as<char*>();
+      Serial.print("Setting Volume to: ");
+      Serial.println((int)control_message["payload"]);
+      config.Volume = (int)control_message["payload"];
+      Ada_musicPlayer.setVolume(config.Volume, config.Volume);
+      saveConfiguration(config_filename,config);
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("listSD")){
+      Serial.println("Listing SD...");
+      String directoryList = "SD Content:\n";
+      if (SD.begin(CARDCS)){
+        directoryList.concat(printDirectory(SD.open((const char*)control_message["payload"]),0));
+        Serial.print("Length of directory list: ");
+        Serial.println(directoryList.length());
+        //char buf[directoryList.length() +1];
+        //directoryList.toCharArray(buf, directoryList.length() +1);
+        //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
+        paho_MQTTSend(directoryList,answerTopic);
+        Serial.println(directoryList);
+        SD.end();
+      }
+      else{
+        paho_MQTTSend("SD Card could not be opened",answerTopic);
+      }
+    }
+    else if (control_message["command"].as<String>().equalsIgnoreCase("listConfig")){
+      Serial.println("listing config");
+      String configuration = "";
+      configuration.concat("Ringtone: ");
+      configuration.concat(config.RingSound);
+      configuration.concat("\n");
+      configuration.concat("Volume: ");
+      configuration.concat(config.Volume);
+      configuration.concat("\n");
+      //char buf[configuration.length() +1];
+      //configuration.toCharArray(buf, configuration.length()+1);
+      //int rc = MQTTclient.publish("/DoorBell/Answers", (void *)buf, strlen(buf) + 1);
+      paho_MQTTSend(configuration,answerTopic);
+      Serial.println(configuration);
+    }
+    else{
+      Serial.print("Got some other command:");
+      Serial.println(control_message["command"].as<String>());
+    }
+  }
+  void paho_MQTT_connect(){
+
+    Serial.print("MQTT Connecting to ");
+    Serial.print(hostname);
+    Serial.print(":");
+    Serial.println(port);
+
+    int rc = ipstack.connect(hostname, port);
+    if (rc != 1)
+    {
+      Serial.print("rc from TCP connect is ");
+      Serial.println(rc);
+      Serial.println("TCP connection not established. Not trying to connect using MQTT.");
+    }
+    else
+    {
+      //Only continue with MQTT Connection if the TCP connection was successful!
+      Serial.println("MQTT connecting");
+      MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
+      data.MQTTVersion = 3.1;
+      data.clientID.cstring = (char *)"DoorBellMQTTClient";
+      data.keepAliveInterval = 200;
+      rc = MQTTclient.connect(data);
+      if (rc != 0)
+      {
+        Serial.print("rc from MQTT connect is ");
+        Serial.println(rc);
+      }
+      Serial.println("MQTT connected");
+      rc = MQTTclient.subscribe((const char *)"/DoorBell/Control", MQTT::QOS0, paho_MQTT_message_control);
+      if (rc != 0)
+      {
+        Serial.print("rc from MQTT subscribe is ");
+        Serial.println(rc);
+      }
+      Serial.println("MQTT subscribed");
+    }
+  }
+
+  void paho_MQTTSend(String msg, char* topic){
+      char buf[msg.length() +1];
+      msg.toCharArray(buf, msg.length() +1);
+      int rc = MQTTclient.publish(topic, (void *)buf, strlen(buf) + 1);
+  }
+#endif
