@@ -11,9 +11,6 @@
 #define MQTTCLIENT_QOS2 0
 //#define DEFAULT_STACK_SIZE -1
 //#define MQTT_DEBUG
-#include <WiFi.h>
-#include <IPStack.h>
-#include <Countdown.h>
 #include <MQTTClient.h>
 #include <ArduinoJson.h>
 
@@ -91,11 +88,11 @@ void setup(){
   // General DoorBell setup: Input Pin and VS1053
     Serial.begin(9600);
     Serial.println("\n\n CoMakingSpace Door Bell");
-    while (!Ada_musicPlayer.begin() && !Serial.available()){ 
+    while (!Ada_musicPlayer.begin() && !Serial.available()){
       // initialise the music player
       Serial.println(F("Couldn't find VS1053, do you have the right pins defined? We will keep trying."));
     }
-    if (!SD.begin(CARDCS)){ 
+    if (!SD.begin(CARDCS)){
       //Check the SD Card to be present. If not, we need to play a hardcoded file.
       Serial.println(F("SD failed, or not present"));
       fallback = true;
@@ -130,7 +127,7 @@ void setup(){
     start_OTA();
   // MQTT Setup
     Serial.println("OTA started. Starting MQTT now...");
-    
+
     #ifdef MQTT_PAHO
       paho_MQTT_connect();
     #endif
@@ -148,17 +145,21 @@ void setup(){
   //runner.addTask(MQTTTask);
   //bellTask.enable();
   //MQTTTask.enable();
-  
-  
+
+
   //xTaskCreatePinnedToCore(paho_checkMQTT_Task, "paho_checkMQTT", 10000, NULL, 0, NULL, 1);
 }
 
 void loop(){
   //vTaskDelay(10);
+  if (millis() >= 28800000) {
+      // Restart every 8 hours -.-
+      esp_restart();
+  }
+
   ArduinoOTA.handle();
   if (!WiFi.isConnected()){
     WiFi.begin();
-  
   }
   #ifdef MQTT_PAHO
     paho_checkMQTT();
@@ -261,7 +262,7 @@ void loadConfiguration(const char *filename, Config &config) {
   // Allocate the memory pool on the stack.
   // Don't forget to change the capacity to match your JSON document.
   // Use arduinojson.org/assistant to compute the capacity.
-  StaticJsonBuffer<512> jsonBuffer;
+  StaticJsonBuffer<1024> jsonBuffer;
 
   // Parse the root object
   JsonObject &root = jsonBuffer.parseObject(file);
@@ -315,7 +316,7 @@ void saveConfiguration(const char *filename, const Config &config) {
   // Allocate the memory pool on the stack
   // Don't forget to change the capacity to match your JSON document.
   // Use https://arduinojson.org/assistant/ to compute the capacity.
-  StaticJsonBuffer<512> jsonBuffer;
+  StaticJsonBuffer<1024> jsonBuffer;
 
   // Parse the root object
   JsonObject &root = jsonBuffer.createObject();
@@ -336,33 +337,34 @@ void saveConfiguration(const char *filename, const Config &config) {
 
 void checkBell(){
   //core functionality is to play music, so let´s do this first!
-    if (digitalRead(21) < 1)
+  if (digitalRead(Ring_Pin) != LOW) {
+      return;
+  }
+
+  Ada_musicPlayer.setVolume(config.Volume, config.Volume);
+  Serial.println("Ring Ring");
+  if(SD.begin(CARDCS))
+  {
+    //Play the MP3 file. In case this does not work, fall back to just playing a sound.
+    bool playSuccessfull = Ada_musicPlayer.playFullFile(config.RingSound);
+    if (!playSuccessfull)
     {
-      Ada_musicPlayer.setVolume(config.Volume, config.Volume);
-      Serial.println("Ring Ring");
-      if(SD.begin(CARDCS))
-      {
-        //Play the MP3 file. In case this does not work, fall back to just playing a sound.
-        bool playSuccessfull = Ada_musicPlayer.playFullFile(config.RingSound); 
-        if (!playSuccessfull)
-        {
-          Serial.println("Playing the file was not successful. Playing a sine tone now.");
-          Ada_musicPlayer.sineTest(0x44, 2000);
-          Ada_musicPlayer.stopPlaying();
-        }
-        SD.end();
-      }
-      else
-      {
-        Serial.println("No SD Card, playing a sine test sound.");
-        Ada_musicPlayer.sineTest(0x44, 2000);
-        Ada_musicPlayer.stopPlaying();
-        //Ada_musicPlayer.playData(sampleMp3, sizeof(sampleMp3));
-      }
-      generic_MQTTSend("Ring Ring","/DoorBell/Ring");
-      
-      Serial.println("Message sent");
+      Serial.println("Playing the file was not successful. Playing a sine tone now.");
+      Ada_musicPlayer.sineTest(0x44, 2000);
+      Ada_musicPlayer.stopPlaying();
     }
+    SD.end();
+  }
+  else
+  {
+    Serial.println("No SD Card, playing a sine test sound.");
+    Ada_musicPlayer.sineTest(0x44, 2000);
+    Ada_musicPlayer.stopPlaying();
+    //Ada_musicPlayer.playData(sampleMp3, sizeof(sampleMp3));
+  }
+  generic_MQTTSend("Ring Ring","/DoorBell/Ring");
+
+  Serial.println("Message sent");
 }
 
 void checkBell_Task(void * pvParameters){
@@ -397,7 +399,7 @@ void generic_MQTT_message_control(char* payload){
     else if (control_message["command"].as<String>().equalsIgnoreCase("selectRingFile")){
       strlcpy(config.RingSound,                   // <- destination
           control_message["payload"],  // <- source
-          strlen(control_message["payload"]) + 1); 
+          strlen(control_message["payload"]) + 1);
       saveConfiguration(config_filename,config);
       String answer = "The ringtone got changes to: ";
       answer.concat((const char*)control_message["payload"]);
@@ -465,30 +467,34 @@ void generic_MQTTSend(String msg, char* topic){
     for(int i = 0; i < length; i++){
       p[i] = (char)payload[i];
     }
-    p[length] = '\0'; 
+    p[length] = '\0';
     generic_MQTT_message_control(p);
   }
 
-  void pubsub_connect(){
+void pubsub_connect() {
     // Loop until we're reconnected
     while (!pubsub_client.connected()) {
-      Serial.print("Attempting MQTT connection...");
-      // Create a random client ID
-      String clientId = "DoorBellMQTTClient";
-      // Attempt to connect
-      if (pubsub_client.connect(clientId.c_str())) {
-        Serial.println("connected");
-        // Once connected, subscribe
-        pubsub_client.subscribe("/DoorBell/Control");
-      } else {
-        Serial.print("failed, rc=");
-        Serial.print(pubsub_client.state());
-        Serial.println(" try again in 5 seconds");
-        // Wait 5 seconds before retrying
-        delay(5000);
-      }
-    } 
-  }
+        if (!WiFi.isConnected()) {
+            esp_restart();
+        }
+
+        Serial.print("Attempting MQTT connection...");
+        // Create a random client ID
+        String clientId = "DoorBellMQTTClient";
+        // Attempt to connect
+        if (pubsub_client.connect(clientId.c_str())) {
+            Serial.println("connected");
+            // Once connected, subscribe
+            pubsub_client.subscribe("/DoorBell/Control");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(pubsub_client.state());
+            Serial.println(" try again in 5 seconds");
+            // Wait 5 seconds before retrying
+            delay(5000);
+        }
+    }
+}
 
   void pubsub_MQTT_update(){
     if (!pubsub_client.connected()) {
@@ -550,7 +556,7 @@ void generic_MQTTSend(String msg, char* topic){
     else if (control_message["command"].as<String>().equalsIgnoreCase("selectRingFile")){
       strlcpy(config.RingSound,                   // <- destination
           control_message["payload"],  // <- source
-          strlen(control_message["payload"]) + 1); 
+          strlen(control_message["payload"]) + 1);
       saveConfiguration(config_filename,config);
       String answer = "The ringtone got changes to: ";
       answer.concat((const char*)control_message["payload"]);
