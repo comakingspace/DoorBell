@@ -16,7 +16,11 @@ namespace Network {
     TimerHandle_t wifiReconnectTimer;
 
     void setupOTA() {
+#ifndef DEBUG_DOOR_BELL
         ArduinoOTA.setHostname("DoorBell");
+#else
+        ArduinoOTA.setHostname("DEBUG_DOOR_BELL");
+#endif
 
         ArduinoOTA.setPassword(OTA_PASSWORD);
 
@@ -68,6 +72,7 @@ namespace Network {
         Serial.println("Connected to MQTT.");
         Serial.print("Session present: ");
         Serial.println(sessionPresent);
+        mqttClient.subscribe("/DoorBell/Control", 0);
     }
 
     void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
@@ -101,12 +106,17 @@ namespace Network {
 
     void setup(AsyncMqttClientInternals::OnMessageUserCallback &onMqttMessage) {
 
+
         mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *) 0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
         wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *) 0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
 
         WiFi.onEvent(WiFiEvent);
 
+#ifndef DEBUG_DOOR_BELL
         mqttClient.setClientId("DoorBellMQTTClient");
+#else
+        mqttClient.setClientId("DEBUG_DOOR_BELL");
+#endif
         mqttClient.onConnect(onMqttConnect);
         mqttClient.onDisconnect(onMqttDisconnect);
         mqttClient.onMessage(onMqttMessage);

@@ -18,4 +18,6 @@ const char *answerTopic = "/DoorBell/Answers";
 #define VS1053_DREQ 4 // VS1053 Data request, ideally an Interrupt pin
 #endif
 
+//#define DEBUG_DOOR_BELL
+
 #endif //DOORBELL_GLOBALS_HPP

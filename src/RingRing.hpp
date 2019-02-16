@@ -14,7 +14,7 @@ namespace RingRing {
         if (digitalRead(Ring_Pin) != LOW) {
             return;
         }
-        sound.playRingtone();
+        Sound::playRingtone();
     }
 
     void checkBell_Task(void *pvParameters) {
