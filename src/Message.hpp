@@ -39,7 +39,7 @@ namespace Message {
                     control_message["payload"],  // <- source
                     strlen(control_message["payload"]) + 1);
             Configuration::save();
-            String answer = "The ringtone got changes to: ";
+            String answer = "The ringtone got changed to: ";
             answer.concat((const char *) control_message["payload"]);
             Network::send(answerTopic, answer);
         } else if (command.equalsIgnoreCase("setVolume")) {

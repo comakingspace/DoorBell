@@ -85,30 +85,33 @@ namespace Sound {
         audioPlayer.setVolume(volume, volume);
     }
 
-    boolean play(const String &filename) {
+    boolean play(const char* filename) {
         updateVolume(Configuration::Volume);
-        Serial.println("Ring Ring");
-        Network::send("/DoorBell/Ring", "Ring Ring");
+        
 
         if (SD.begin(CARDCS)) {
             //Play the MP3 file. In case this does not work, fall back to just playing a sound.
-            bool playSuccessful = audioPlayer.playFullFile(Configuration::RingSound);
+            bool playSuccessful = audioPlayer.playFullFile(filename);
             SD.end();
             return playSuccessful;
         }
         return false;
     }
 
-    boolean play() {
-        return play(Configuration::RingSound);
-    }
+    // boolean play() {
+    //     return play(Configuration::RingSound);
+    //     Serial.println("Ring Ring");
+    //     Network::send("/DoorBell/Ring", "Ring Ring");
+    // }
 
-    boolean play(const char *filename) {
-        return play(String{filename});
-    }
+    // boolean play(const char *filename) {
+    //     return play(filename);
+    // }
 
 
     void playRingtone() {
+        Serial.println("Ring Ring");
+        Network::send("/DoorBell/Ring", "Ring Ring");
         if(!play(Configuration::RingSound)) {
             Serial.println("No SD Card, playing a sine test sound.");
             audioPlayer.sineTest(0x44, 2000);
