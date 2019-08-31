@@ -16,11 +16,11 @@ namespace Network {
     TimerHandle_t wifiReconnectTimer;
 
     void setupOTA() {
-#ifndef DEBUG_DOOR_BELL
-        ArduinoOTA.setHostname("DoorBell");
-#else
-        ArduinoOTA.setHostname("DEBUG_DOOR_BELL");
-#endif
+        #ifndef DEBUG_DOOR_BELL
+            ArduinoOTA.setHostname("DoorBell");
+        #else
+            ArduinoOTA.setHostname("DEBUG_DOOR_BELL");
+        #endif
 
         ArduinoOTA.setPassword(OTA_PASSWORD);
 
@@ -64,7 +64,8 @@ namespace Network {
     }
 
     void connectToMqtt() {
-        Serial.println("Connecting to MQTT...");
+        Serial.print("Connecting to MQTT Server: ");
+        Serial.println(HOSTNAME);
         mqttClient.connect();
     }
 
@@ -112,13 +113,13 @@ namespace Network {
 
         WiFi.onEvent(WiFiEvent);
 
-#ifndef DEBUG_DOOR_BELL
-        mqttClient.setClientId("DoorBellMQTTClient");
-#else
-        mqttClient.setClientId("DEBUG_DOOR_BELL");
-#endif
-        mqttClient.onConnect(onMqttConnect);
-        mqttClient.onDisconnect(onMqttDisconnect);
+        #ifndef DEBUG_DOOR_BELL
+            mqttClient.setClientId("DoorBellMQTTClient");
+        #else
+            mqttClient.setClientId("DEBUG_DOOR_BELL");
+        #endif
+        mqttClient.onConnect(Network::onMqttConnect);
+        mqttClient.onDisconnect(Network::onMqttDisconnect);
         mqttClient.onMessage(onMqttMessage);
         mqttClient.setServer(HOSTNAME, MQTT_PORT);
         connectToWifi();

@@ -19,7 +19,7 @@ namespace Message {
         JsonObject &control_message = jsonBuffer.parseObject(payload);
         String command = control_message["command"].as<String>();
         const char* messagePayload = control_message["payload"];
-
+        
         Serial.print(F("Got the following command: "));
         Serial.println(command);
         Serial.print(F("Got the following payload: "));
@@ -75,7 +75,8 @@ namespace Message {
             Serial.print("Got some other command:");
             Serial.println(command);
         }
-
+        jsonBuffer.clear();
+        
     };
 
 }

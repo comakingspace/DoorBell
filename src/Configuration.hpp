@@ -46,17 +46,19 @@ namespace Configuration {
 
     void setup() {
 //         Open file for reading
+        Serial.println(F("Open Config File"));
         if (SD.begin(CARDCS)) {
             File file = SD.open(config_filename);
 
             // Allocate the memory pool on the stack.
             // Don't forget to change the capacity to match your JSON document.
             // Use arduinojson.org/assistant to compute the capacity.
+            Serial.println(F("Allocating config memory"));
             StaticJsonBuffer<1024> jsonBuffer;
 
             // Parse the root object
             JsonObject &root = jsonBuffer.parseObject(file);
-
+            Serial.println(F("Reading Config File"));
             if (!root.success()) {
                 Serial.println(F("Failed to read file, using default configuration"));
                 strlcpy(RingSound,                   // <- destination
